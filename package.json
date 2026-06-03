@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "sync-context": "node scripts/sync-context.mjs",
     "lint": "eslint"
   },
   "dependencies": {

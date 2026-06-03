@@ -1,15 +1,17 @@
 "use client";
 
-import { useState, FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { useState, FormEvent, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence, Variants } from "framer-motion";
 import { Terminal, Eye, EyeOff, ArrowRight, Loader2, DollarSign } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 type Tab = "signin" | "signup";
 
-export default function DeveloperLoginPage() {
+function DeveloperLoginPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const callback = searchParams ? searchParams.get("callback") : null;
   const [activeTab, setActiveTab] = useState<Tab>("signin");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +80,12 @@ export default function DeveloperLoginPage() {
       if (profile.role !== "developer") {
         await supabase.auth.signOut();
         throw new Error("This portal is for developers only. Please use the client login.");
+      }
+
+      const session = data.session;
+      if (callback && session) {
+        window.location.href = `${callback}?access_token=${session.access_token}&refresh_token=${session.refresh_token}&email=${encodeURIComponent(session.user?.email || "")}`;
+        return;
       }
 
       router.push("/developer/dashboard");
@@ -402,5 +410,20 @@ export default function DeveloperLoginPage() {
         </motion.p>
       </motion.div>
     </main>
+  );
+}
+
+export default function DeveloperLoginPage() {
+  return (
+    <Suspense fallback={
+      <main className="relative min-h-screen flex items-center justify-center bg-[#030303]">
+        <div className="flex items-center space-x-2 text-gray-500 font-medium text-sm">
+          <Loader2 className="w-4 h-4 animate-spin text-purple-500" />
+          <span>Loading auth portal...</span>
+        </div>
+      </main>
+    }>
+      <DeveloperLoginPageContent />
+    </Suspense>
   );
 }
