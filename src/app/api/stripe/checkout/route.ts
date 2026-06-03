@@ -8,14 +8,29 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder"
 
 export async function POST(request: Request) {
   try {
-    const { invoiceId, amount, projectTitle } = await request.json();
+    const { invoiceId } = await request.json();
 
-    if (!invoiceId || !amount) {
+    if (!invoiceId) {
       return NextResponse.json(
-        { error: "Missing required fields: invoiceId and amount are required" },
+        { error: "Missing required fields: invoiceId is required" },
         { status: 400 }
       );
     }
+
+    // Fetch invoice details securely from the database
+    const { data: invoice, error: invoiceError } = await supabaseAdmin
+      .from("invoices")
+      .select("*, projects(title)")
+      .eq("id", invoiceId)
+      .single();
+
+    if (invoiceError || !invoice) {
+      console.error("Invoice not found:", invoiceError);
+      return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
+    }
+
+    const amount = Number(invoice.amount);
+    const projectTitle = (invoice.projects as any)?.title || "Strange Labs Invoice";
 
     if (amount <= 0) {
       return NextResponse.json(

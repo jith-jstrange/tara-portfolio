@@ -10,11 +10,11 @@ import {
   Play,
   Pause,
   Square,
-  ArrowRight,
   Loader2,
   CheckCircle2,
   Circle,
   Timer,
+  Layers,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -26,7 +26,8 @@ interface Task {
   status: "todo" | "in_progress" | "completed";
   logged_hours: number;
   project_id: string;
-  projects: { title: string } | null;
+  assigned_developer_id: string | null;
+  projects: { title: string; status: string } | null;
 }
 
 interface Stats {
@@ -67,8 +68,10 @@ export default function DeveloperDashboardPage() {
     activeProjects: 0,
   });
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [availableTasks, setAvailableTasks] = useState<Task[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
   const [updatingTask, setUpdatingTask] = useState<string | null>(null);
+  const [claimingTaskId, setClaimingTaskId] = useState<string | null>(null);
 
   // Timer state
   const [timerRunning, setTimerRunning] = useState(false);
@@ -88,7 +91,73 @@ export default function DeveloperDashboardPage() {
     visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 120, damping: 14 } },
   };
 
-  // Fetch user + data
+  const loadDashboardData = useCallback(async (uid: string, rateVal: number) => {
+    setLoadingTasks(true);
+
+    // 1. Fetch assigned tasks
+    const { data: tasksData } = await supabase
+      .from("tasks")
+      .select("id, title, description, status, logged_hours, project_id, assigned_developer_id, projects(title, status)")
+      .eq("assigned_developer_id", uid)
+      .neq("status", "completed")
+      .order("created_at", { ascending: false });
+
+    const fetchedTasks = (tasksData as unknown as Task[]) || [];
+    setTasks(fetchedTasks);
+
+    // 2. Fetch available unassigned tasks from active projects
+    const { data: availableData } = await supabase
+      .from("tasks")
+      .select("id, title, description, status, logged_hours, project_id, assigned_developer_id, projects(title, status)")
+      .is("assigned_developer_id", null)
+      .neq("status", "completed")
+      .order("created_at", { ascending: false });
+
+    // Filter available tasks to only show those belonging to active projects
+    const activeAvailable = ((availableData as unknown as Task[]) || []).filter(
+      (t) => t.projects?.status === "active"
+    );
+    setAvailableTasks(activeAvailable);
+
+    // 3. Stats calculations
+    const { count: totalAssigned } = await supabase
+      .from("tasks")
+      .select("id", { count: "exact", head: true })
+      .eq("assigned_developer_id", uid)
+      .neq("status", "completed");
+
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    
+    const { data: weekLogs } = await supabase
+      .from("time_logs")
+      .select("hours")
+      .eq("developer_id", uid)
+      .gte("created_at", weekAgo.toISOString());
+
+    const hoursThisWeek = (weekLogs || []).reduce((sum, l) => sum + Number(l.hours), 0);
+
+    const { data: allLogs } = await supabase
+      .from("time_logs")
+      .select("hours")
+      .eq("developer_id", uid);
+
+    const totalHours = (allLogs || []).reduce((sum, l) => sum + Number(l.hours), 0);
+    const totalEarnings = totalHours * rateVal;
+
+    const activeProjectIds = new Set(fetchedTasks.map((t) => t.project_id));
+
+    setStats({
+      assignedTasks: totalAssigned || 0,
+      hoursThisWeek: Math.round(hoursThisWeek * 100) / 100,
+      totalEarnings: Math.round(totalEarnings),
+      activeProjects: activeProjectIds.size,
+    });
+
+    setLoadingTasks(false);
+  }, []);
+
+  // Fetch user + profile
   useEffect(() => {
     const init = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -97,72 +166,21 @@ export default function DeveloperDashboardPage() {
       const uid = session.user.id;
       setUserId(uid);
 
-      // Fetch profile
       const { data: profile } = await supabase
         .from("profiles")
         .select("full_name, hourly_rate")
         .eq("id", uid)
         .single();
 
-      if (profile) {
-        setUserName(profile.full_name || "Developer");
-        setHourlyRate(profile.hourly_rate || 500);
-      }
+      const rateVal = profile?.hourly_rate || 500;
+      setUserName(profile?.full_name || "Developer");
+      setHourlyRate(rateVal);
 
-      // Fetch assigned tasks with project title
-      const { data: tasksData } = await supabase
-        .from("tasks")
-        .select("id, title, description, status, logged_hours, project_id, projects(title)")
-        .eq("assigned_developer_id", uid)
-        .neq("status", "completed")
-        .order("created_at", { ascending: false });
-
-      const fetchedTasks = (tasksData || []) as unknown as Task[];
-      setTasks(fetchedTasks);
-
-      // Count assigned tasks (all statuses)
-      const { count: totalAssigned } = await supabase
-        .from("tasks")
-        .select("id", { count: "exact", head: true })
-        .eq("assigned_developer_id", uid)
-        .neq("status", "completed");
-
-      // Hours logged this week
-      const weekAgo = new Date();
-      weekAgo.setDate(weekAgo.getDate() - 7);
-      const { data: weekLogs } = await supabase
-        .from("time_logs")
-        .select("hours")
-        .eq("developer_id", uid)
-        .gte("created_at", weekAgo.toISOString());
-
-      const hoursThisWeek = (weekLogs || []).reduce((sum, l) => sum + Number(l.hours), 0);
-
-      // Total earnings from all time_logs
-      const { data: allLogs } = await supabase
-        .from("time_logs")
-        .select("hours")
-        .eq("developer_id", uid);
-
-      const totalHours = (allLogs || []).reduce((sum, l) => sum + Number(l.hours), 0);
-      const rate = profile?.hourly_rate || 500;
-      const totalEarnings = totalHours * rate;
-
-      // Active projects (distinct project_ids from non-completed tasks)
-      const activeProjectIds = new Set(fetchedTasks.map((t) => t.project_id));
-
-      setStats({
-        assignedTasks: totalAssigned || 0,
-        hoursThisWeek: Math.round(hoursThisWeek * 100) / 100,
-        totalEarnings: Math.round(totalEarnings),
-        activeProjects: activeProjectIds.size,
-      });
-
-      setLoadingTasks(false);
+      await loadDashboardData(uid, rateVal);
     };
 
     init();
-  }, []);
+  }, [loadDashboardData]);
 
   // Timer logic
   const startTimer = useCallback(() => {
@@ -200,7 +218,6 @@ export default function DeveloperDashboardPage() {
     const hours = Math.round((timerSeconds / 3600) * 100) / 100;
 
     try {
-      // Insert time log
       await supabase.from("time_logs").insert({
         task_id: selectedTaskId,
         developer_id: userId,
@@ -208,7 +225,6 @@ export default function DeveloperDashboardPage() {
         description: `Timer session: ${formatTime(timerSeconds)}`,
       });
 
-      // Update logged_hours on task
       const task = tasks.find((t) => t.id === selectedTaskId);
       if (task) {
         const newHours = (task.logged_hours || 0) + hours;
@@ -217,14 +233,12 @@ export default function DeveloperDashboardPage() {
           .update({ logged_hours: newHours })
           .eq("id", selectedTaskId);
 
-        // Update local state
         setTasks((prev) =>
           prev.map((t) =>
             t.id === selectedTaskId ? { ...t, logged_hours: newHours } : t
           )
         );
 
-        // Update stats
         setStats((prev) => ({
           ...prev,
           hoursThisWeek: Math.round((prev.hoursThisWeek + hours) * 100) / 100,
@@ -239,7 +253,6 @@ export default function DeveloperDashboardPage() {
     setTimerSeconds(0);
   };
 
-  // Cleanup interval on unmount
   useEffect(() => {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
@@ -267,6 +280,35 @@ export default function DeveloperDashboardPage() {
       console.error("Failed to update task:", err);
     }
     setUpdatingTask(null);
+  };
+
+  // Claim unassigned task
+  const claimTask = async (taskId: string) => {
+    if (!userId) return;
+    setClaimingTaskId(taskId);
+    try {
+      const { error } = await supabase
+        .from("tasks")
+        .update({ assigned_developer_id: userId })
+        .eq("id", taskId);
+
+      if (error) throw error;
+
+      // Update lists locally
+      const claimed = availableTasks.find((t) => t.id === taskId);
+      if (claimed) {
+        setAvailableTasks((prev) => prev.filter((t) => t.id !== taskId));
+        setTasks((prev) => [{ ...claimed, assigned_developer_id: userId, status: "todo" }, ...prev]);
+        setStats((prev) => ({
+          ...prev,
+          assignedTasks: prev.assignedTasks + 1,
+        }));
+      }
+    } catch (err: any) {
+      alert("Failed to claim task: " + err.message);
+    } finally {
+      setClaimingTaskId(null);
+    }
   };
 
   const statCards = [
@@ -309,28 +351,28 @@ export default function DeveloperDashboardPage() {
   ];
 
   return (
-    <motion.div variants={containerVariants} initial="hidden" animate="visible">
+    <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
       {/* Header */}
-      <motion.div variants={itemVariants} className="mb-8">
+      <motion.div variants={itemVariants}>
         <h1 className="text-2xl md:text-3xl font-bold text-white font-display tracking-tight">
           Welcome back,{" "}
           <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
             {userName}
           </span>
         </h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Here&apos;s your development overview for today.
+        <p className="text-xs text-gray-500 mt-1 font-mono">
+          strangelabs.online // developer dashboard
         </p>
       </motion.div>
 
       {/* Stats Grid */}
-      <motion.div variants={itemVariants} className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
+      <motion.div variants={itemVariants} className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {statCards.map((card) => (
           <motion.div
             key={card.id}
             id={card.id}
             whileHover={{ scale: 1.02, y: -2 }}
-            className={`p-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm hover:border-white/10 transition-all`}
+            className="p-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm hover:border-white/10 transition-all"
           >
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -346,35 +388,32 @@ export default function DeveloperDashboardPage() {
       </motion.div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Active Tasks Board — 2 columns */}
-        <motion.div variants={itemVariants} className="xl:col-span-2">
-          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
+        {/* Active Tasks & Available Tasks Panels */}
+        <div className="xl:col-span-2 space-y-6">
+          {/* Active Tasks Board */}
+          <motion.div variants={itemVariants} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
               <h2 className="text-base font-semibold text-white font-display flex items-center space-x-2">
                 <ListChecks className="w-4 h-4 text-purple-400" />
-                <span>Active Tasks</span>
+                <span>My Active Tasks</span>
               </h2>
-              <span className="text-xs text-gray-500">{tasks.length} tasks</span>
+              <span className="text-xs text-gray-500 font-mono">{tasks.length} tasks</span>
             </div>
 
-            <div className="p-4 space-y-3 max-h-[480px] overflow-y-auto">
+            <div className="p-4 space-y-3 max-h-[300px] overflow-y-auto">
               {loadingTasks ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="w-6 h-6 text-purple-400 animate-spin" />
                 </div>
               ) : tasks.length === 0 ? (
-                <div className="text-center py-12">
-                  <CheckCircle2 className="w-10 h-10 text-green-500/30 mx-auto mb-3" />
-                  <p className="text-sm text-gray-500">No active tasks. You&apos;re all caught up!</p>
+                <div className="text-center py-8">
+                  <CheckCircle2 className="w-8 h-8 text-green-500/30 mx-auto mb-2" />
+                  <p className="text-xs text-gray-500 font-mono">No active tasks. Claim some below!</p>
                 </div>
               ) : (
                 tasks.map((task) => (
                   <motion.div
                     key={task.id}
-                    layout
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
                     className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.02] hover:border-white/10 transition-all"
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -387,13 +426,13 @@ export default function DeveloperDashboardPage() {
                           <p className="text-xs text-gray-600 mt-1 line-clamp-2">{task.description}</p>
                         )}
                       </div>
-                      <span className={`shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-full border ${statusColors[task.status]}`}>
+                      <span className={`shrink-0 text-[10px] font-medium px-2.5 py-1 rounded-full border ${statusColors[task.status]}`}>
                         {statusLabels[task.status]}
                       </span>
                     </div>
 
                     <div className="flex items-center justify-between mt-3 pt-3 border-t border-white/[0.04]">
-                      <span className="text-[11px] text-gray-600 flex items-center space-x-1">
+                      <span className="text-[10px] text-gray-600 flex items-center space-x-1 font-mono">
                         <Clock className="w-3 h-3" />
                         <span>{task.logged_hours || 0}h logged</span>
                       </span>
@@ -405,7 +444,7 @@ export default function DeveloperDashboardPage() {
                             type="button"
                             disabled={updatingTask === task.id}
                             onClick={() => updateTaskStatus(task.id, "in_progress")}
-                            className="flex items-center space-x-1 text-xs font-medium text-indigo-400 hover:text-indigo-300 transition-colors disabled:opacity-50"
+                            className="flex items-center space-x-1 text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition-colors disabled:opacity-50"
                           >
                             {updatingTask === task.id ? (
                               <Loader2 className="w-3 h-3 animate-spin" />
@@ -421,7 +460,7 @@ export default function DeveloperDashboardPage() {
                             type="button"
                             disabled={updatingTask === task.id}
                             onClick={() => updateTaskStatus(task.id, "completed")}
-                            className="flex items-center space-x-1 text-xs font-medium text-green-400 hover:text-green-300 transition-colors disabled:opacity-50"
+                            className="flex items-center space-x-1 text-xs font-semibold text-green-400 hover:text-green-300 transition-colors disabled:opacity-50"
                           >
                             {updatingTask === task.id ? (
                               <Loader2 className="w-3 h-3 animate-spin" />
@@ -437,10 +476,71 @@ export default function DeveloperDashboardPage() {
                 ))
               )}
             </div>
-          </div>
-        </motion.div>
+          </motion.div>
 
-        {/* Quick Timer Widget — 1 column */}
+          {/* Available Tasks Board (NEW CLAIMS) */}
+          <motion.div variants={itemVariants} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
+            <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
+              <h2 className="text-base font-semibold text-white font-display flex items-center space-x-2">
+                <Layers className="w-4 h-4 text-pink-400" />
+                <span>Available Tasks to Claim</span>
+              </h2>
+              <span className="text-xs text-gray-500 font-mono">{availableTasks.length} unassigned</span>
+            </div>
+
+            <div className="p-4 space-y-3 max-h-[300px] overflow-y-auto">
+              {loadingTasks ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-6 h-6 text-pink-400 animate-spin" />
+                </div>
+              ) : availableTasks.length === 0 ? (
+                <div className="text-center py-8">
+                  <CheckCircle2 className="w-8 h-8 text-gray-600/30 mx-auto mb-2" />
+                  <p className="text-xs text-gray-500 font-mono">No available tasks to claim right now.</p>
+                </div>
+              ) : (
+                availableTasks.map((task) => (
+                  <motion.div
+                    key={`available-${task.id}`}
+                    layout
+                    className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.01] hover:border-white/10 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-semibold text-white truncate">{task.title}</h3>
+                      <p className="text-xs text-gray-500 mt-0.5 truncate">
+                        {task.projects?.title || "Active Project"}
+                      </p>
+                      {task.description && (
+                        <p className="text-xs text-gray-600 mt-1 line-clamp-2">{task.description}</p>
+                      )}
+                    </div>
+
+                    <div className="shrink-0 flex items-center gap-4">
+                      <motion.button
+                        id={`btn-claim-${task.id}`}
+                        type="button"
+                        onClick={() => claimTask(task.id)}
+                        disabled={claimingTaskId === task.id}
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        className="px-4 py-2 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-400 text-xs font-bold shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        {claimingTaskId === task.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <ListChecks className="w-3.5 h-3.5" />
+                        )}
+                        Claim Task
+                      </motion.button>
+                    </div>
+                  </motion.div>
+                ))
+              )}
+            </div>
+          </motion.div>
+        </div>
+
+        {/* Quick Timer Widget */}
         <motion.div variants={itemVariants}>
           <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-white/[0.06]">
@@ -461,13 +561,11 @@ export default function DeveloperDashboardPage() {
                   value={selectedTaskId}
                   onChange={(e) => setSelectedTaskId(e.target.value)}
                   disabled={timerRunning}
-                  className="w-full px-3 py-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-white text-sm focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/30 transition-all disabled:opacity-50"
+                  className="w-full px-3 py-2.5 rounded-xl bg-[#0a0a0a] border border-white/10 text-white text-sm focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/30 transition-all disabled:opacity-50"
                 >
-                  <option value="" className="bg-[#0a0a0a]">
-                    -- Choose a task --
-                  </option>
+                  <option value="">-- Choose an active task --</option>
                   {tasks.map((task) => (
-                    <option key={task.id} value={task.id} className="bg-[#0a0a0a]">
+                    <option key={task.id} value={task.id}>
                       {task.title}
                     </option>
                   ))}
@@ -497,7 +595,7 @@ export default function DeveloperDashboardPage() {
               </div>
 
               {/* Status */}
-              <p className="text-xs text-gray-500 mb-4 flex items-center space-x-1.5">
+              <p className="text-xs text-gray-500 mb-4 flex items-center space-x-1.5 font-mono">
                 <Circle className={`w-2 h-2 ${
                   timerRunning && !timerPaused
                     ? "fill-green-400 text-green-400"
@@ -577,21 +675,21 @@ export default function DeveloperDashboardPage() {
               </div>
 
               {timerSeconds > 0 && timerSeconds < 60 && !timerRunning && (
-                <p className="text-[11px] text-amber-500 mt-3">
+                <p className="text-[10px] text-amber-500 mt-3 font-mono">
                   Sessions under 1 minute are not saved.
                 </p>
               )}
 
               {/* Rate info */}
-              <div className="mt-6 w-full pt-4 border-t border-white/[0.04]">
-                <div className="flex items-center justify-between text-xs text-gray-600">
+              <div className="mt-6 w-full pt-4 border-t border-white/[0.04] font-mono text-xs text-gray-600 space-y-1">
+                <div className="flex items-center justify-between">
                   <span>Your rate</span>
                   <span className="text-gray-400 font-medium">₹{hourlyRate}/hr</span>
                 </div>
                 {timerRunning && (
-                  <div className="flex items-center justify-between text-xs text-gray-600 mt-1">
-                    <span>Current session value</span>
-                    <span className="text-green-400 font-medium">
+                  <div className="flex items-center justify-between">
+                    <span>Session value</span>
+                    <span className="text-green-400 font-medium animate-pulse">
                       ₹{Math.round((timerSeconds / 3600) * hourlyRate)}
                     </span>
                   </div>
