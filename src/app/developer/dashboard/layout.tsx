@@ -95,7 +95,14 @@ export default function DeveloperDashboardLayout({
   const isActive = (href: string) => pathname === href;
 
   return (
-    <div className="min-h-screen bg-[#050505] flex">
+    <div className="min-h-screen bg-[#030303] text-gray-300 flex relative overflow-hidden">
+      {/* Background Grid Overlay */}
+      <div className="absolute inset-0 bg-[linear-gradient(to_right,#1f1f1f_1px,transparent_1px),linear-gradient(to_bottom,#1f1f1f_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)] opacity-35 pointer-events-none" />
+
+      {/* Cosmic Blurs */}
+      <div className="absolute top-10 right-1/4 w-[400px] h-[400px] rounded-full bg-indigo-600/5 blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-20 left-10 w-[350px] h-[350px] rounded-full bg-purple-600/5 blur-[100px] pointer-events-none" />
+
       {/* Mobile overlay */}
       <AnimatePresence>
         {sidebarOpen && (

@@ -344,8 +344,9 @@ export default function DeveloperDashboardPage() {
             key={card.id}
             id={card.id}
             whileHover={{ scale: 1.02, y: -2 }}
-            className="p-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm hover:border-white/10 transition-all"
+            className="p-5 rounded-2xl border border-white/[0.08] bg-zinc-950/40 backdrop-blur-md hover:border-purple-500/30 hover:shadow-[0_0_20px_rgba(168,85,247,0.04)] transition-all relative overflow-hidden group"
           >
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-purple-500/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
                 {card.label}
@@ -363,7 +364,8 @@ export default function DeveloperDashboardPage() {
         {/* Active Tasks & Available Tasks Panels */}
         <div className="xl:col-span-2 space-y-6">
           {/* Active Tasks Board */}
-          <motion.div variants={itemVariants} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
+          <motion.div variants={itemVariants} className="rounded-2xl border border-white/[0.08] bg-zinc-950/40 backdrop-blur-md hover:border-purple-500/20 hover:shadow-[0_0_30px_rgba(168,85,247,0.03)] transition-all overflow-hidden relative group">
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-purple-500/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
             <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
               <h2 className="text-base font-semibold text-white font-display flex items-center space-x-2">
                 <ListChecks className="w-4 h-4 text-purple-400" />
@@ -386,7 +388,7 @@ export default function DeveloperDashboardPage() {
                 tasks.map((task) => (
                   <motion.div
                     key={task.id}
-                    className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.02] hover:border-white/10 transition-all"
+                    className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.01] hover:border-white/[0.12] hover:bg-white/[0.03] transition-all relative group/item"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
@@ -451,7 +453,8 @@ export default function DeveloperDashboardPage() {
           </motion.div>
 
           {/* Available Projects Board (NEW CLAIMS) */}
-          <motion.div variants={itemVariants} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
+          <motion.div variants={itemVariants} className="rounded-2xl border border-white/[0.08] bg-zinc-950/40 backdrop-blur-md hover:border-purple-500/20 hover:shadow-[0_0_30px_rgba(168,85,247,0.03)] transition-all overflow-hidden relative group">
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-purple-500/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
             <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
               <h2 className="text-base font-semibold text-white font-display flex items-center space-x-2">
                 <Layers className="w-4 h-4 text-pink-400" />
@@ -475,7 +478,7 @@ export default function DeveloperDashboardPage() {
                   <motion.div
                     key={`available-proj-${project.id}`}
                     layout
-                    className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.01] hover:border-white/10 transition-all flex flex-col justify-between gap-3"
+                    className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.01] hover:border-white/[0.12] hover:bg-white/[0.03] transition-all flex flex-col justify-between gap-3 relative group/item"
                   >
                     <div>
                       <h3 className="text-sm font-semibold text-white truncate">{project.title}</h3>
@@ -515,7 +518,8 @@ export default function DeveloperDashboardPage() {
 
         {/* IDE Integration Guide */}
         <motion.div variants={itemVariants}>
-          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
+          <div className="rounded-2xl border border-white/[0.08] bg-zinc-950/40 backdrop-blur-md hover:border-purple-500/20 hover:shadow-[0_0_30px_rgba(168,85,247,0.03)] transition-all overflow-hidden relative group">
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-purple-500/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
             <div className="px-6 py-4 border-b border-white/[0.06]">
               <h2 className="text-base font-semibold text-white font-display flex items-center space-x-2">
                 <Terminal className="w-4 h-4 text-purple-400" />
