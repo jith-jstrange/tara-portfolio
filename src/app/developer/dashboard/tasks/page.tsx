@@ -26,6 +26,16 @@ interface Task {
   projects: { title: string; status: string } | null;
 }
 
+interface AvailableProject {
+  id: string;
+  title: string;
+  description: string | null;
+  estimated_hours_min: number;
+  estimated_hours_max: number;
+  estimated_cost_min: number;
+  estimated_cost_max: number;
+}
+
 const containerVariants: Variants = {
   hidden: { opacity: 0 },
   visible: { opacity: 1, transition: { staggerChildren: 0.08 } },
@@ -51,13 +61,13 @@ const statusLabels: Record<string, string> = {
 export default function TasksPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [availableTasks, setAvailableTasks] = useState<Task[]>([]);
+  const [availableProjects, setAvailableProjects] = useState<AvailableProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatingTaskId, setUpdatingTaskId] = useState<string | null>(null);
-  const [claimingTaskId, setClaimingTaskId] = useState<string | null>(null);
+  const [claimingProjectId, setClaimingProjectId] = useState<string | null>(null);
 
   const fetchTasksData = useCallback(async (uid: string) => {
-    // 1. Fetch assigned tasks (including completed ones to show full list)
+    // 1. Fetch assigned tasks
     const { data: assignedData, error: assignedError } = await supabase
       .from("tasks")
       .select("id, title, description, status, logged_hours, project_id, assigned_developer_id, projects(title, status)")
@@ -67,21 +77,18 @@ export default function TasksPage() {
     if (assignedError) console.error("Error fetching assigned tasks:", assignedError);
     else setTasks((assignedData as unknown as Task[]) || []);
 
-    // 2. Fetch unassigned tasks from active projects
-    const { data: availableData, error: availableError } = await supabase
-      .from("tasks")
-      .select("id, title, description, status, logged_hours, project_id, assigned_developer_id, projects(title, status)")
+    // 2. Fetch unassigned active projects
+    const { data: availableProjectsData, error: availableProjectsError } = await supabase
+      .from("projects")
+      .select("id, title, description, estimated_hours_min, estimated_hours_max, estimated_cost_min, estimated_cost_max")
       .is("assigned_developer_id", null)
-      .neq("status", "completed")
+      .eq("status", "active")
       .order("created_at", { ascending: false });
 
-    if (availableError) {
-      console.error("Error fetching available tasks:", availableError);
+    if (availableProjectsError) {
+      console.error("Error fetching available projects:", availableProjectsError);
     } else {
-      const activeAvailable = ((availableData as unknown as Task[]) || []).filter(
-        (t) => t.projects?.status === "active"
-      );
-      setAvailableTasks(activeAvailable);
+      setAvailableProjects((availableProjectsData as AvailableProject[]) || []);
     }
 
     setLoading(false);
@@ -121,9 +128,9 @@ export default function TasksPage() {
     }
   };
 
-  const claimTask = async (taskId: string) => {
+  const claimProject = async (projectId: string) => {
     if (!userId) return;
-    setClaimingTaskId(taskId);
+    setClaimingProjectId(projectId);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -131,30 +138,27 @@ export default function TasksPage() {
         return;
       }
 
-      const response = await fetch("/api/tasks/claim", {
+      const response = await fetch("/api/projects/claim", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ taskId }),
+        body: JSON.stringify({ projectId }),
       });
 
       const result = await response.json();
 
       if (!response.ok) {
-        throw new Error(result.error || "Failed to claim task");
+        throw new Error(result.error || "Failed to claim project");
       }
 
-      const claimed = availableTasks.find(t => t.id === taskId);
-      if (claimed) {
-        setAvailableTasks(prev => prev.filter(t => t.id !== taskId));
-        setTasks(prev => [{ ...claimed, assigned_developer_id: userId, status: "todo" }, ...prev]);
-      }
+      // Success, reload all data
+      await fetchTasksData(userId);
     } catch (err: any) {
-      alert("Failed to claim task: " + err.message);
+      alert("Failed to claim project: " + err.message);
     } finally {
-      setClaimingTaskId(null);
+      setClaimingProjectId(null);
     }
   };
 
@@ -312,55 +316,55 @@ export default function TasksPage() {
           </motion.div>
         </div>
 
-        {/* Right Side: Available Open Tasks to Claim */}
+        {/* Right Side: Available Open Projects to Claim */}
         <motion.div variants={itemVariants} className="space-y-6">
           <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
               <h2 className="text-sm font-semibold text-white font-display flex items-center gap-2">
                 <Layers className="w-4 h-4 text-pink-400" />
-                <span>Available Tasks</span>
+                <span>Available Projects</span>
               </h2>
-              <span className="text-xs text-gray-500 font-mono">{availableTasks.length} open</span>
+              <span className="text-xs text-gray-500 font-mono">{availableProjects.length} open</span>
             </div>
 
             <div className="p-4 space-y-3 max-h-[500px] overflow-y-auto">
-              {availableTasks.length === 0 ? (
+              {availableProjects.length === 0 ? (
                 <div className="text-center py-12">
-                  <CheckSquare className="w-10 h-10 text-gray-700 mx-auto mb-2" />
-                  <p className="text-xs text-gray-500">No open tasks available to claim right now.</p>
+                  <Layers className="w-10 h-10 text-gray-700 mx-auto mb-2" />
+                  <p className="text-xs text-gray-500">No open projects available to claim right now.</p>
                 </div>
               ) : (
-                availableTasks.map((task) => (
+                availableProjects.map((project) => (
                   <div
-                    key={`open-${task.id}`}
+                    key={`open-proj-${project.id}`}
                     className="p-3.5 rounded-xl border border-white/[0.04] bg-white/[0.01] hover:border-white/10 transition-all space-y-2.5"
                   >
                     <div>
-                      <h4 className="font-semibold text-white text-xs">{task.title}</h4>
-                      <p className="text-[10px] text-purple-400 flex items-center gap-0.5 mt-0.5 font-medium">
-                        <Folder className="w-2.5 h-2.5" />
-                        {task.projects?.title || "Project"}
-                      </p>
-                      {task.description && (
-                        <p className="text-[11px] text-gray-600 line-clamp-2 mt-1.5">{task.description}</p>
+                      <h4 className="font-semibold text-white text-xs">{project.title}</h4>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-[10px] text-gray-500 font-mono">
+                        <span>Min Cost: ₹{project.estimated_cost_min?.toLocaleString("en-IN")}</span>
+                        <span>{project.estimated_hours_min}-{project.estimated_hours_max}h</span>
+                      </div>
+                      {project.description && (
+                        <p className="text-[11px] text-gray-600 line-clamp-2 mt-1.5">{project.description}</p>
                       )}
                     </div>
 
                     <motion.button
-                      id={`btn-claim-tasks-${task.id}`}
+                      id={`btn-claim-project-sidebar-${project.id}`}
                       type="button"
-                      onClick={() => claimTask(task.id)}
-                      disabled={claimingTaskId === task.id}
+                      onClick={() => claimProject(project.id)}
+                      disabled={claimingProjectId === project.id}
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                       className="w-full flex items-center justify-center gap-1 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 hover:bg-purple-500/20 text-[10px] font-bold transition-all disabled:opacity-50"
                     >
-                      {claimingTaskId === task.id ? (
+                      {claimingProjectId === project.id ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       ) : (
                         <ChevronRight className="w-3.5 h-3.5" />
                       )}
-                      Claim This Task
+                      Claim Project & Sync IDE
                     </motion.button>
                   </div>
                 ))

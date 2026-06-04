@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion, Variants } from "framer-motion";
 import {
   ListChecks,
@@ -8,13 +8,15 @@ import {
   IndianRupee,
   FolderOpen,
   Play,
-  Pause,
-  Square,
   Loader2,
   CheckCircle2,
-  Circle,
-  Timer,
   Layers,
+  Terminal,
+  Key,
+  Eye,
+  EyeOff,
+  Copy,
+  Check,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -57,6 +59,16 @@ const statusLabels: Record<string, string> = {
   completed: "Completed",
 };
 
+interface AvailableProject {
+  id: string;
+  title: string;
+  description: string | null;
+  estimated_hours_min: number;
+  estimated_hours_max: number;
+  estimated_cost_min: number;
+  estimated_cost_max: number;
+}
+
 export default function DeveloperDashboardPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [userName, setUserName] = useState("Developer");
@@ -68,18 +80,28 @@ export default function DeveloperDashboardPage() {
     activeProjects: 0,
   });
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [availableTasks, setAvailableTasks] = useState<Task[]>([]);
+  const [availableProjects, setAvailableProjects] = useState<AvailableProject[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
   const [updatingTask, setUpdatingTask] = useState<string | null>(null);
-  const [claimingTaskId, setClaimingTaskId] = useState<string | null>(null);
+  const [claimingProjectId, setClaimingProjectId] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [generatingKey, setGeneratingKey] = useState(false);
 
-  // Timer state
-  const [timerRunning, setTimerRunning] = useState(false);
-  const [timerPaused, setTimerPaused] = useState(false);
-  const [timerSeconds, setTimerSeconds] = useState(0);
-  const [selectedTaskId, setSelectedTaskId] = useState<string>("");
-  const [savingTime, setSavingTime] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // API Key & Clipboard state
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [copiedKey, setCopiedKey] = useState(false);
+  const [copiedCmd, setCopiedCmd] = useState(false);
+
+  const copyToClipboard = (text: string, type: "key" | "cmd") => {
+    navigator.clipboard.writeText(text);
+    if (type === "key") {
+      setCopiedKey(true);
+      setTimeout(() => setCopiedKey(false), 2000);
+    } else {
+      setCopiedCmd(true);
+      setTimeout(() => setCopiedCmd(false), 2000);
+    }
+  };
 
   // Animation variants
   const containerVariants: Variants = {
@@ -94,36 +116,32 @@ export default function DeveloperDashboardPage() {
   const loadDashboardData = useCallback(async (uid: string, rateVal: number) => {
     setLoadingTasks(true);
 
-    // 1. Fetch assigned tasks
+    // 1. Fetch assigned tasks where project belongs to developer
     const { data: tasksData } = await supabase
       .from("tasks")
-      .select("id, title, description, status, logged_hours, project_id, assigned_developer_id, projects(title, status)")
-      .eq("assigned_developer_id", uid)
+      .select("id, title, description, status, logged_hours, project_id, assigned_developer_id, projects!inner(title, status, assigned_developer_id)")
+      .eq("projects.assigned_developer_id", uid)
       .neq("status", "completed")
       .order("created_at", { ascending: false });
 
     const fetchedTasks = (tasksData as unknown as Task[]) || [];
     setTasks(fetchedTasks);
 
-    // 2. Fetch available unassigned tasks from active projects
-    const { data: availableData } = await supabase
-      .from("tasks")
-      .select("id, title, description, status, logged_hours, project_id, assigned_developer_id, projects(title, status)")
+    // 2. Fetch available unassigned projects (status = active, assigned_developer_id = null)
+    const { data: availableProjectsData } = await supabase
+      .from("projects")
+      .select("id, title, description, estimated_hours_min, estimated_hours_max, estimated_cost_min, estimated_cost_max")
       .is("assigned_developer_id", null)
-      .neq("status", "completed")
+      .eq("status", "active")
       .order("created_at", { ascending: false });
 
-    // Filter available tasks to only show those belonging to active projects
-    const activeAvailable = ((availableData as unknown as Task[]) || []).filter(
-      (t) => t.projects?.status === "active"
-    );
-    setAvailableTasks(activeAvailable);
+    setAvailableProjects((availableProjectsData as AvailableProject[]) || []);
 
     // 3. Stats calculations
     const { count: totalAssigned } = await supabase
       .from("tasks")
-      .select("id", { count: "exact", head: true })
-      .eq("assigned_developer_id", uid)
+      .select("id, projects!inner(assigned_developer_id)", { count: "exact", head: true })
+      .eq("projects.assigned_developer_id", uid)
       .neq("status", "completed");
 
     const weekAgo = new Date();
@@ -157,7 +175,7 @@ export default function DeveloperDashboardPage() {
     setLoadingTasks(false);
   }, []);
 
-  // Fetch user + profile
+  // Fetch user + profile and API key
   useEffect(() => {
     const init = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -168,13 +186,14 @@ export default function DeveloperDashboardPage() {
 
       const { data: profile } = await supabase
         .from("profiles")
-        .select("full_name, hourly_rate")
+        .select("full_name, hourly_rate, api_key")
         .eq("id", uid)
         .single();
 
       const rateVal = profile?.hourly_rate || 500;
       setUserName(profile?.full_name || "Developer");
       setHourlyRate(rateVal);
+      setApiKey(profile?.api_key || "");
 
       await loadDashboardData(uid, rateVal);
     };
@@ -183,82 +202,7 @@ export default function DeveloperDashboardPage() {
   }, [loadDashboardData]);
 
   // Timer logic
-  const startTimer = useCallback(() => {
-    if (!selectedTaskId) return;
-    setTimerRunning(true);
-    setTimerPaused(false);
-    intervalRef.current = setInterval(() => {
-      setTimerSeconds((prev) => prev + 1);
-    }, 1000);
-  }, [selectedTaskId]);
-
-  const pauseTimer = () => {
-    setTimerPaused(true);
-    if (intervalRef.current) clearInterval(intervalRef.current);
-  };
-
-  const resumeTimer = () => {
-    setTimerPaused(false);
-    intervalRef.current = setInterval(() => {
-      setTimerSeconds((prev) => prev + 1);
-    }, 1000);
-  };
-
-  const stopTimer = async () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    setTimerRunning(false);
-    setTimerPaused(false);
-
-    if (timerSeconds < 60 || !userId || !selectedTaskId) {
-      setTimerSeconds(0);
-      return;
-    }
-
-    setSavingTime(true);
-    const hours = Math.round((timerSeconds / 3600) * 100) / 100;
-
-    try {
-      await supabase.from("time_logs").insert({
-        task_id: selectedTaskId,
-        developer_id: userId,
-        hours,
-        description: `Timer session: ${formatTime(timerSeconds)}`,
-      });
-
-      const task = tasks.find((t) => t.id === selectedTaskId);
-      if (task) {
-        const newHours = (task.logged_hours || 0) + hours;
-        await supabase
-          .from("tasks")
-          .update({ logged_hours: newHours })
-          .eq("id", selectedTaskId);
-
-        setTasks((prev) =>
-          prev.map((t) =>
-            t.id === selectedTaskId ? { ...t, logged_hours: newHours } : t
-          )
-        );
-
-        setStats((prev) => ({
-          ...prev,
-          hoursThisWeek: Math.round((prev.hoursThisWeek + hours) * 100) / 100,
-          totalEarnings: prev.totalEarnings + Math.round(hours * hourlyRate),
-        }));
-      }
-    } catch (err) {
-      console.error("Failed to save time log:", err);
-    }
-
-    setSavingTime(false);
-    setTimerSeconds(0);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, []);
-
+  // Automatic time logs are synced via the local MCP server running in developer IDEs.
   // Task status update
   const updateTaskStatus = async (taskId: string, newStatus: "in_progress" | "completed") => {
     setUpdatingTask(taskId);
@@ -282,10 +226,10 @@ export default function DeveloperDashboardPage() {
     setUpdatingTask(null);
   };
 
-  // Claim unassigned task
-  const claimTask = async (taskId: string) => {
+  // Claim unassigned project
+  const claimProject = async (projectId: string) => {
     if (!userId) return;
-    setClaimingTaskId(taskId);
+    setClaimingProjectId(projectId);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -293,37 +237,51 @@ export default function DeveloperDashboardPage() {
         return;
       }
 
-      const response = await fetch("/api/tasks/claim", {
+      const response = await fetch("/api/projects/claim", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ taskId }),
+        body: JSON.stringify({ projectId }),
       });
 
       const result = await response.json();
 
       if (!response.ok) {
-        throw new Error(result.error || "Failed to claim task");
+        throw new Error(result.error || "Failed to claim project");
       }
 
-      // Update lists locally
-      const claimed = availableTasks.find((t) => t.id === taskId);
-      if (claimed) {
-        setAvailableTasks((prev) => prev.filter((t) => t.id !== taskId));
-        setTasks((prev) => [{ ...claimed, assigned_developer_id: userId, status: "todo" }, ...prev]);
-        setStats((prev) => ({
-          ...prev,
-          assignedTasks: prev.assignedTasks + 1,
-        }));
-      }
+      // Success, reload all dashboard data
+      await loadDashboardData(userId, hourlyRate);
     } catch (err: any) {
-      alert("Failed to claim task: " + err.message);
+      alert("Failed to claim project: " + err.message);
     } finally {
-      setClaimingTaskId(null);
+      setClaimingProjectId(null);
     }
   };
+
+  // Generate / Rotate Developer API Key
+  const generateApiKey = async () => {
+    if (!userId) return;
+    setGeneratingKey(true);
+    try {
+      // Generate a simple, secure randomized key
+      const newKey = "sl_dev_" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      const { error } = await supabase
+        .from("profiles")
+        .update({ api_key: newKey })
+        .eq("id", userId);
+
+      if (error) throw error;
+      setApiKey(newKey);
+    } catch (err: any) {
+      alert("Failed to generate API Key: " + err.message);
+    } finally {
+      setGeneratingKey(false);
+    }
+  };
+
 
   const statCards = [
     {
@@ -492,14 +450,14 @@ export default function DeveloperDashboardPage() {
             </div>
           </motion.div>
 
-          {/* Available Tasks Board (NEW CLAIMS) */}
+          {/* Available Projects Board (NEW CLAIMS) */}
           <motion.div variants={itemVariants} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
               <h2 className="text-base font-semibold text-white font-display flex items-center space-x-2">
                 <Layers className="w-4 h-4 text-pink-400" />
-                <span>Available Tasks to Claim</span>
+                <span>Available Projects to Claim</span>
               </h2>
-              <span className="text-xs text-gray-500 font-mono">{availableTasks.length} unassigned</span>
+              <span className="text-xs text-gray-500 font-mono">{availableProjects.length} open</span>
             </div>
 
             <div className="p-4 space-y-3 max-h-[300px] overflow-y-auto">
@@ -507,44 +465,45 @@ export default function DeveloperDashboardPage() {
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="w-6 h-6 text-pink-400 animate-spin" />
                 </div>
-              ) : availableTasks.length === 0 ? (
+              ) : availableProjects.length === 0 ? (
                 <div className="text-center py-8">
                   <CheckCircle2 className="w-8 h-8 text-gray-600/30 mx-auto mb-2" />
-                  <p className="text-xs text-gray-500 font-mono">No available tasks to claim right now.</p>
+                  <p className="text-xs text-gray-500 font-mono">No available projects to claim right now.</p>
                 </div>
               ) : (
-                availableTasks.map((task) => (
+                availableProjects.map((project) => (
                   <motion.div
-                    key={`available-${task.id}`}
+                    key={`available-proj-${project.id}`}
                     layout
-                    className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.01] hover:border-white/10 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.01] hover:border-white/10 transition-all flex flex-col justify-between gap-3"
                   >
-                    <div className="min-w-0 flex-1">
-                      <h3 className="text-sm font-semibold text-white truncate">{task.title}</h3>
-                      <p className="text-xs text-gray-500 mt-0.5 truncate">
-                        {task.projects?.title || "Active Project"}
-                      </p>
-                      {task.description && (
-                        <p className="text-xs text-gray-600 mt-1 line-clamp-2">{task.description}</p>
+                    <div>
+                      <h3 className="text-sm font-semibold text-white truncate">{project.title}</h3>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[10px] text-gray-500 font-mono">
+                        <span>Min Cost: ₹{project.estimated_cost_min?.toLocaleString("en-IN")}</span>
+                        <span>Hours: {project.estimated_hours_min}-{project.estimated_hours_max}h</span>
+                      </div>
+                      {project.description && (
+                        <p className="text-xs text-gray-600 mt-2 line-clamp-2 leading-relaxed">{project.description}</p>
                       )}
                     </div>
 
-                    <div className="shrink-0 flex items-center gap-4">
+                    <div className="flex items-center justify-end">
                       <motion.button
-                        id={`btn-claim-${task.id}`}
+                        id={`btn-claim-project-${project.id}`}
                         type="button"
-                        onClick={() => claimTask(task.id)}
-                        disabled={claimingTaskId === task.id}
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        className="px-4 py-2 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-400 text-xs font-bold shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+                        onClick={() => claimProject(project.id)}
+                        disabled={claimingProjectId === project.id}
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-400 text-xs font-bold transition-all disabled:opacity-50"
                       >
-                        {claimingTaskId === task.id ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
+                        {claimingProjectId === project.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         ) : (
                           <ListChecks className="w-3.5 h-3.5" />
                         )}
-                        Claim Task
+                        Claim Project & Sync IDE
                       </motion.button>
                     </div>
                   </motion.div>
@@ -554,160 +513,110 @@ export default function DeveloperDashboardPage() {
           </motion.div>
         </div>
 
-        {/* Quick Timer Widget */}
+        {/* IDE Integration Guide */}
         <motion.div variants={itemVariants}>
           <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-white/[0.06]">
               <h2 className="text-base font-semibold text-white font-display flex items-center space-x-2">
-                <Timer className="w-4 h-4 text-pink-400" />
-                <span>Quick Timer</span>
+                <Terminal className="w-4 h-4 text-purple-400" />
+                <span>IDE Integration Guide</span>
               </h2>
             </div>
 
-            <div className="p-6 flex flex-col items-center">
-              {/* Task selector */}
-              <div className="w-full mb-6">
-                <label htmlFor="timer-task-select" className="block text-xs font-medium text-gray-500 mb-2">
-                  Select Task
-                </label>
-                <select
-                  id="timer-task-select"
-                  value={selectedTaskId}
-                  onChange={(e) => setSelectedTaskId(e.target.value)}
-                  disabled={timerRunning}
-                  className="w-full px-3 py-2.5 rounded-xl bg-[#0a0a0a] border border-white/10 text-white text-sm focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/30 transition-all disabled:opacity-50"
-                >
-                  <option value="">-- Choose an active task --</option>
-                  {tasks.map((task) => (
-                    <option key={task.id} value={task.id}>
-                      {task.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Timer Display */}
-              <div className="relative mb-6">
-                <div className={`w-40 h-40 rounded-full border-2 flex items-center justify-center transition-colors ${
-                  timerRunning && !timerPaused
-                    ? "border-purple-500/50 shadow-lg shadow-purple-500/10"
-                    : timerPaused
-                    ? "border-amber-500/50 shadow-lg shadow-amber-500/10"
-                    : "border-white/10"
-                }`}>
-                  <span className="text-3xl font-bold text-white font-mono tracking-wider">
-                    {formatTime(timerSeconds)}
-                  </span>
-                </div>
-                {timerRunning && !timerPaused && (
-                  <motion.div
-                    className="absolute inset-0 rounded-full border-2 border-purple-500/30"
-                    animate={{ scale: [1, 1.08, 1] }}
-                    transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                  />
-                )}
-              </div>
-
-              {/* Status */}
-              <p className="text-xs text-gray-500 mb-4 flex items-center space-x-1.5 font-mono">
-                <Circle className={`w-2 h-2 ${
-                  timerRunning && !timerPaused
-                    ? "fill-green-400 text-green-400"
-                    : timerPaused
-                    ? "fill-amber-400 text-amber-400"
-                    : "fill-gray-600 text-gray-600"
-                }`} />
-                <span>
-                  {timerRunning && !timerPaused
-                    ? "Recording..."
-                    : timerPaused
-                    ? "Paused"
-                    : "Ready"}
-                </span>
+            <div className="p-6 space-y-6">
+              <p className="text-xs text-gray-400 leading-relaxed">
+                Connect your local coding environment to automatically sync your files and track active coding time. Works with <strong className="text-white">Antigravity IDE</strong>, <strong className="text-white">Cursor</strong>, and <strong className="text-white">VS Code</strong>.
               </p>
 
-              {/* Controls */}
-              <div className="flex items-center space-x-3">
-                {!timerRunning ? (
-                  <motion.button
-                    id="timer-start"
-                    type="button"
-                    disabled={!selectedTaskId}
-                    onClick={startTimer}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    className="flex items-center space-x-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 text-white text-sm font-semibold disabled:opacity-30 disabled:cursor-not-allowed"
-                  >
-                    <Play className="w-4 h-4" />
-                    <span>Start</span>
-                  </motion.button>
+              {/* API Key Management */}
+              <div className="space-y-3 p-4 rounded-xl border border-white/[0.04] bg-white/[0.01]">
+                <h3 className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Developer API Key</span>
+                </h3>
+                
+                {apiKey ? (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-xs font-mono text-gray-300 break-all select-all flex items-center justify-between">
+                      <span className="truncate max-w-[180px]">{showApiKey ? apiKey : "••••••••••••••••••••••••••••••••"}</span>
+                      <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          className="p-1 text-gray-500 hover:text-gray-300 transition-colors"
+                          title={showApiKey ? "Hide Key" : "Show Key"}
+                        >
+                          {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(apiKey, "key")}
+                          className="p-1 text-gray-500 hover:text-gray-300 transition-colors"
+                          title="Copy Key"
+                        >
+                          {copiedKey ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 ) : (
-                  <>
-                    {timerPaused ? (
-                      <motion.button
-                        id="timer-resume"
-                        type="button"
-                        onClick={resumeTimer}
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        className="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-400 text-sm font-semibold"
-                      >
-                        <Play className="w-4 h-4" />
-                        <span>Resume</span>
-                      </motion.button>
-                    ) : (
-                      <motion.button
-                        id="timer-pause"
-                        type="button"
-                        onClick={pauseTimer}
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        className="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-400 text-sm font-semibold"
-                      >
-                        <Pause className="w-4 h-4" />
-                        <span>Pause</span>
-                      </motion.button>
-                    )}
-                    <motion.button
-                      id="timer-stop"
-                      type="button"
-                      onClick={stopTimer}
-                      disabled={savingTime}
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      className="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-red-500/20 border border-red-500/30 text-red-400 text-sm font-semibold disabled:opacity-50"
-                    >
-                      {savingTime ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Square className="w-4 h-4" />
-                      )}
-                      <span>Stop</span>
-                    </motion.button>
-                  </>
+                  <p className="text-xs text-amber-400/80 font-mono">No active API key. Generate one to begin setup.</p>
                 )}
+
+                <button
+                  type="button"
+                  disabled={generatingKey}
+                  onClick={generateApiKey}
+                  className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20 text-xs font-semibold transition-all disabled:opacity-50"
+                >
+                  {generatingKey ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Key className="w-3.5 h-3.5" />
+                  )}
+                  <span>{apiKey ? "Rotate / Regenerate API Key" : "Generate API Key"}</span>
+                </button>
               </div>
 
-              {timerSeconds > 0 && timerSeconds < 60 && !timerRunning && (
-                <p className="text-[10px] text-amber-500 mt-3 font-mono">
-                  Sessions under 1 minute are not saved.
-                </p>
-              )}
+              {/* Instructions Steps */}
+              <div className="space-y-4 text-xs">
+                <h3 className="font-semibold text-white">Setup Instructions</h3>
+                
+                <ol className="space-y-3 list-decimal list-inside text-gray-400">
+                  <li className="leading-relaxed">
+                    <span className="text-gray-300 font-medium">Claim a project</span> from the available list on the left.
+                  </li>
+                  <li className="leading-relaxed">
+                    <span className="text-gray-300 font-medium">Open the workspace directory</span> of the project on your computer.
+                  </li>
+                  <li className="leading-relaxed">
+                    <span className="text-gray-300 font-medium">Run the setup CLI script</span> inside your terminal in that workspace:
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="flex-1 px-3 py-2 rounded-lg bg-black/40 border border-white/10 font-mono text-[11px] text-purple-300 break-all select-all flex items-center justify-between">
+                        <span>node scripts/setup-mcp.js</span>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard("node scripts/setup-mcp.js", "cmd")}
+                          className="p-1 text-gray-500 hover:text-gray-300 transition-colors shrink-0 ml-2"
+                          title="Copy Command"
+                        >
+                          {copiedCmd ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                  <li className="leading-relaxed">
+                    <span className="text-gray-300 font-medium">Authorize connection:</span> The CLI will print a URL. Open it to link your IDE session automatically.
+                  </li>
+                </ol>
+              </div>
 
-              {/* Rate info */}
-              <div className="mt-6 w-full pt-4 border-t border-white/[0.04] font-mono text-xs text-gray-600 space-y-1">
-                <div className="flex items-center justify-between">
-                  <span>Your rate</span>
-                  <span className="text-gray-400 font-medium">₹{hourlyRate}/hr</span>
-                </div>
-                {timerRunning && (
-                  <div className="flex items-center justify-between">
-                    <span>Session value</span>
-                    <span className="text-green-400 font-medium animate-pulse">
-                      ₹{Math.round((timerSeconds / 3600) * hourlyRate)}
-                    </span>
-                  </div>
-                )}
+              {/* Automatic hour notification banner */}
+              <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/20 text-xs text-purple-400 flex gap-2.5 items-start">
+                <Clock className="w-4 h-4 shrink-0 mt-0.5" />
+                <p className="leading-relaxed">
+                  <strong className="text-white">No Stopwatches Needed:</strong> Once connected, the local MCP server running inside your IDE tracks active coding time in the background and logs hours automatically.
+                </p>
               </div>
             </div>
           </div>
