@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { supabaseAdmin } from "@/lib/supabase";
 import * as fs from "fs";
 import * as path from "path";
+import { sendEmail } from "@/lib/resend";
 
 // Initialize Gemini API
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
@@ -139,6 +140,61 @@ export async function POST(request: Request) {
 
     if (tasksInsertError) {
       console.error("Tasks insertion error:", tasksInsertError);
+    }
+
+    // Phase 3: Send Scoping Completion Email Alert
+    try {
+      const { data: projectData } = await supabaseAdmin
+        .from("projects")
+        .select("title, client_id")
+        .eq("id", projectId)
+        .single();
+
+      if (projectData && projectData.client_id) {
+        const { data: clientProfile } = await supabaseAdmin
+          .from("profiles")
+          .select("full_name, email")
+          .eq("id", projectData.client_id)
+          .single();
+
+        if (clientProfile && clientProfile.email) {
+          const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+          const subject = `Strange Labs: AI Scoping Complete for ${projectData.title}`;
+          const html = `
+            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;">
+              <h2 style="color: #6366f1;">Strange Labs: AI Scoping Complete!</h2>
+              <p>Hi ${clientProfile.full_name || "Client User"},</p>
+              <p>Our AI Project Manager has successfully analyzed and scoped your project: <strong>${projectData.title}</strong>.</p>
+              
+              <div style="background-color: #f9fafb; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <h3 style="margin-top: 0; color: #111827;">Scope Summary</h3>
+                <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">${parsedData.projectSummary}</p>
+                
+                <h3 style="color: #111827;">Estimated Effort & Budget</h3>
+                <ul style="color: #4b5563; font-size: 14px;">
+                  <li><strong>Hours Range:</strong> ${parsedData.minHours} - ${parsedData.maxHours} hours</li>
+                  <li><strong>Cost Range:</strong> ₹${totalEstimatedCostMin.toLocaleString("en-IN")} - ₹${totalEstimatedCostMax.toLocaleString("en-IN")}</li>
+                </ul>
+                
+                <h3 style="color: #111827;">AI Budget Outlook</h3>
+                <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">${parsedData.budgetOutlook}</p>
+              </div>
+
+              <p>Please log in to your client portal to review details, approve the estimate, and initiate development.</p>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${appUrl}/dashboard" style="background-color: #6366f1; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Go to Client Portal</a>
+              </div>
+              
+              <hr style="border: 0; border-top: 1px solid #eee;" />
+              <p style="font-size: 12px; color: #9ca3af; text-align: center;">Strange Labs &copy; 2026. Built by jstrange.</p>
+            </div>
+          `;
+          await sendEmail({ to: clientProfile.email, subject, html });
+        }
+      }
+    } catch (emailError) {
+      console.error("Failed to send scoping email notification:", emailError);
     }
 
     // Update IDE workspace documentation files if running locally

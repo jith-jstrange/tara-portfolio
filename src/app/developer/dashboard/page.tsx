@@ -287,12 +287,26 @@ export default function DeveloperDashboardPage() {
     if (!userId) return;
     setClaimingTaskId(taskId);
     try {
-      const { error } = await supabase
-        .from("tasks")
-        .update({ assigned_developer_id: userId })
-        .eq("id", taskId);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert("Session expired. Please log in again.");
+        return;
+      }
 
-      if (error) throw error;
+      const response = await fetch("/api/tasks/claim", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ taskId }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to claim task");
+      }
 
       // Update lists locally
       const claimed = availableTasks.find((t) => t.id === taskId);
